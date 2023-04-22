@@ -1,83 +1,20 @@
 #!/usr/bin/env python3
 
 
-import numpy as np
-import pandas as pd
-import sys
-import os
-from tqdm import tqdm
-import scipy.sparse
-import pickle
 from itertools import islice
-import torch
+from tqdm import tqdm
+import numpy as np
+import os
+import pandas as pd
+import pickle
+import scipy.sparse
+import sys
 
 
-ROOT = '/home/linh/Downloads/KT1'
-
-data_folder = "/home/linh/Downloads/ednet-project/KT1"
-ROOT_FOLDER = '/home/linh/projects/deep-irt'
-
-
-class EdnetKT1(torch.utils.data.Dataset):
-    def __init__(self, ds_file='kt1_data_0.npz', train=True, binarized_response=True, swap_ability_item=False, **kwargs):
-        super().__init__()
-
-        self.swap_ability_item = swap_ability_item
-
-        raw_data = scipy.sparse.load_npz(os.path.join(ROOT_FOLDER, ds_file)).todok()
-
-        rs = np.random.RandomState(42)
-        swapper = np.arange(100000)
-        rs.shuffle(swapper)
-
-        num_users = 100000 # responses.shape[0]
-        num_train = int(0.7 * num_users)
-
-        if train:
-            index_map = swapper[:num_train]
-        else:
-            index_map = swapper[num_train:]
-
-        self.index_map = index_map
-        self.responses = raw_data
-        self.length = len(self.index_map) #raw_data.shape[0]
-        self.num_person = len(self.index_map) # raw_data.shape[0]
-        self.num_item = raw_data.shape[1]
-        self.maskperc = 0.3
-
-    def __len__(self):
-        return self.length
-
-    def __getitem__(self, index):
-        full = self.responses[self.index_map[index], :]
-        full_size = full.getnnz()
-        unmask_size = int(full_size * (1-self.maskperc))
-        rs = np.random.RandomState(42)
-        swapper = np.arange(full_size)
-        rs.shuffle(swapper)
-        masked = swapper[unmask_size:]
-        data_indices = self.responses[self.index_map[index], :].nonzero()
-        not_keep = (data_indices[0][masked], data_indices[1][masked])
-        not_keep_indices = [x for x in zip(*not_keep)]
-        response = self.responses[self.index_map[index], :].toarray()
-        missing_mask = np.zeros(response.shape, dtype=bool)
-        missing_mask[not_keep] = 1
-        missing_data = missing_mask * response - 1
-        response = response - 1
-        response[not_keep] = -1
-        mask = np.zeros(response.shape, dtype=bool)
-        mask[data_indices] = 1
-        mask[not_keep] = 0
-        return missing_data, response, missing_mask, mask
-
-
-def test_dataset_loader():
-    test_loader = EdnetKT1(train=True)
-    loader = torch.utils.data.DataLoader(test_loader, batch_size=32, shuffle=True)
-    for batch_idx, (md, r, mi, m) in enumerate(loader):
-        print(md)
-        print(r.shape)
-        break
+ROOT = '/home/linh/Downloads/ednet-project'
+data_folder = f'{ROOT}/KT1'
+question_content_path = f'{ROOT}/ednet_contents/questions.csv'
+generated_path = f'{ROOT}/ednet_generated'
 
 
 def chunks(data, SIZE=100000):
@@ -100,31 +37,31 @@ def process_student(student_id, qdata, qid, sid, sparse_mat):
     return sparse_mat
 
 
-def make_student_id(folder):
+def make_student_id(folder=data_folder):
     all_files = [f for f in os.listdir(folder)]
     indices = [x for x in range(len(all_files))]
     sid = dict([(student, index) for student, index in zip(all_files, indices)])
-    with open('student_lookup.pkl', 'wb') as fp:
+    with open(f'{generated_path}/student_lookup.pkl', 'wb') as fp:
         pickle.dump(sid, fp)
 
 
 def make_question_id():
-    questions = pd.read_csv('/home/linh/Downloads/ednet-project/ednet_contents/questions.csv')
+    questions = pd.read_csv(question_content_path)
     indices = [x for x in range(len(questions))]
     qid = dict([(question_id, index) for question_id, index in zip(questions.question_id, indices)])
-    with open('question_lookup.pkl', 'wb') as fp:
+    with open(f'{generated_path}/question_lookup.pkl', 'wb') as fp:
         pickle.dump(qid, fp)
 
 
-def generate_data():
+def generate_compressed_data():
     sid = {}
     qid = {}
-    with open('student_lookup.pkl', 'rb') as fp:
+    with open(f'{generated_path}/student_lookup.pkl', 'rb') as fp:
         sid = pickle.load(fp)
-    with open('question_lookup.pkl', 'rb') as fp:
+    with open(f'{generated_path}/question_lookup.pkl', 'rb') as fp:
         qid = pickle.load(fp)
 
-    questions = pd.read_csv('/home/linh/Downloads/ednet-project/ednet_contents/questions.csv')
+    questions = pd.read_csv(question_content_path)
     question_data = dict([(id, ans) for id, ans in zip(questions.question_id, questions.correct_answer)])
 
     counter = 0
@@ -136,6 +73,7 @@ def generate_data():
         scipy.sparse.save_npz(f'kt1_data_{counter}.npz', sparse.tocoo())
         counter += 1
 
+
 def load_dataset(filename):
     mat = scipy.sparse.load_npz(filename).todok()
     row = mat[0, :].toarray()
@@ -143,24 +81,31 @@ def load_dataset(filename):
     print(len(mat))
 
 
-def write_student(train, valid, key, qdata, qid, filter_qid=False):
+def write_student_assist_format(train, valid, key, qdata, qid, filter_qid=False):
     keyname = f"{key}.csv"
     data = pd.read_csv(os.path.join(ROOT, keyname))
     if filter_qid:
         data = data[data['question_id'].isin(qid.keys())]
     total = len(data)
-    # train_len = int(total * 0.7)
+    train_len = int(total * 0.7)
     np_data = data[["question_id", "user_answer", "elapsed_time"]].to_numpy()
     correct_ans = [qdata[x] for x in np_data[:, 0]]
     correct = (np_data[:, 1] == correct_ans).astype(int).astype(str)
     question_number = np.array([qid[x] for x in np_data[:, 0]]).astype(str)
     np_data = np_data.astype(str)
-    train_lines = [str(key), str(train_len), ','.join(question_number), ','.join(correct) + "\n"], #, ','.join(np_data[:train_len, 2]) + "\n"]
-    # valid_lines = [str(key), str(total - train_len), ','.join(question_number[train_len:]), ','.join(correct[train_len:]), ','.join(np_data[train_len:, 2]) + "\n"]
+
+    train_lines = [str(key), str(train_len),
+                   ','.join(question_number[:train_len]),
+                   ','.join(correct[:train_len]),
+                   ','.join(np_data[:train_len, 2]) + "\n"]
+    valid_lines = [str(key), str(total - train_len),
+                   ','.join(question_number[train_len:]),
+                   ','.join(correct[train_len:]),
+                   ','.join(np_data[train_len:, 2]) + "\n"]
     train_str = "\n".join(train_lines)
-    # valid_str = "\n".join(valid_lines)
+    valid_str = "\n".join(valid_lines)
     train.write(train_str)
-    # valid.write(valid_str)
+    valid.write(valid_str)
 
 
 def count_interaction_student(key, qid, filter_qid=True):
@@ -187,10 +132,11 @@ def count_interactions(filename):
     print(acc)
 
 
-def run_test(filename, folder="/home/linh/Downloads/ednet_generated"):
-    questions = pd.read_csv('/home/linh/Downloads/ednet-project/ednet_contents/questions.csv')
+def generate_assist_format(filename, folder=generated_path):
+    questions = pd.read_csv(question_content_path)
     question_data = dict([(id, ans) for id, ans in zip(questions.question_id, questions.correct_answer)])
 
+    os.makedirs(folder, exist_ok=True)
     with open(filename, 'rb') as f:
         data = np.load(f)
         basename = os.path.basename(filename)
@@ -202,16 +148,19 @@ def run_test(filename, folder="/home/linh/Downloads/ednet_generated"):
         train_file = open(os.path.join(folder, f"{basename[:-4]}_seq_train.csv"), 'w')
         valid_file = open(os.path.join(folder, f"{basename[:-4]}_seq_valid.csv"), 'w')
         for key in tqdm(data):
-            write_student(train_file, valid_file, key, question_data, qid_data, filter_qid=True)
+            write_student_assist_format(train_file, valid_file, key, question_data, qid_data, filter_qid=True)
         train_file.close()
         valid_file.close()
 
 
 if __name__ == '__main__':
-    count_interactions(sys.argv[1])
-    # test_dataset_loader()
-    # load_dataset(sys.argv[1])
-    # generate_data()
-    # make_question_id()
-    # make_student_id(sys.argv[1])
-    # run_test(sys.argv[1])
+    if sys.argv[1] == "interact":
+        count_interactions(sys.argv[2])
+    if sys.argv[1] == "compressed":
+        make_question_id()
+        make_student_id()
+        generate_data()
+    if sys.argv[1] == "assist":
+        generate_assist_format(sys.argv[2])
+    if sys.argv[1] == "load":
+        dataset(sys.argv[2])
