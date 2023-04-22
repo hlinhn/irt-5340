@@ -1,0 +1,3 @@
+[submodule "DeepIRT-tf2"]
+	path = DeepIRT-tf2
+	url = https://github.com/hlinhn/DeepIRT-tf2
